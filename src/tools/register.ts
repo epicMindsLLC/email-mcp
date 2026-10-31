@@ -88,17 +88,18 @@ export default function registerAllTools(server: McpServer, services: AppService
   // Write tools — skipped in read-only mode
   if (!readOnly) {
     const globalMb = config.settings.send.maxAttachmentMb;
-    registerSendTools(server, smtpService, {
+    const sendLimit = {
       globalMb,
-      forAccount: (name) => {
+      forAccount: (name: string) => {
         const account = config.accounts.find((a) => a.name === name);
         return account ? resolveSendLimitMb(account, globalMb) : globalMb;
       },
-    });
+    };
+    registerSendTools(server, smtpService, sendLimit);
     registerManageTools(server, imapService);
     registerLabelTools(server, imapService);
     registerBulkTools(server, imapService);
-    registerDraftTools(server, imapService, smtpService);
+    registerDraftTools(server, imapService, smtpService, sendLimit);
     registerFolderTools(server, imapService);
     registerTemplateWriteTools(server, templateService, imapService, smtpService);
     registerSchedulerTools(server, schedulerService);

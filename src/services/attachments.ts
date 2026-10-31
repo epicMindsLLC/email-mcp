@@ -39,6 +39,27 @@ export interface PreparedAttachments {
   totalEncodedBytes: number;
 }
 
+/**
+ * Narrow a prepared attachment to what nodemailer needs. A cid moves the file
+ * into multipart/related beside the HTML part, so it must ship as inline —
+ * as a classic attachment it would show up as a stray file instead of
+ * rendering where the <img src="cid:..."> points.
+ */
+export function toTransportAttachment({ filename, path, cid, contentType }: PreparedAttachment): {
+  filename: string;
+  path: string;
+  cid?: string;
+  contentDisposition?: 'inline';
+  contentType?: string;
+} {
+  return {
+    filename,
+    path,
+    ...(cid ? { cid, contentDisposition: 'inline' as const } : {}),
+    ...(contentType ? { contentType } : {}),
+  };
+}
+
 export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;

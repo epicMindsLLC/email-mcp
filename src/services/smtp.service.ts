@@ -13,32 +13,11 @@ import { sanitizeTemplateVariable } from '../safety/validation.js';
 import type { SendResult, SentCopyResult } from '../types/index.js';
 import { stripHtml } from '../utils/html.js';
 import { quoteOriginalAsHtml, quoteOriginalAsText } from '../utils/quote.js';
-import type { PreparedAttachment } from './attachments.js';
+import { type PreparedAttachment, toTransportAttachment } from './attachments.js';
 import type ImapService from './imap.service.js';
 
 /** Per-file ceiling when re-fetching originals for a forward. */
 const FORWARD_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
-
-/**
- * Narrow a prepared attachment to what nodemailer needs. A cid moves the file
- * into multipart/related beside the HTML part, so it must ship as inline —
- * as a classic attachment it would show up as a stray file instead of
- * rendering where the <img src="cid:..."> points.
- */
-function toTransportAttachment({ filename, path, cid, contentType }: PreparedAttachment): {
-  filename: string;
-  path: string;
-  cid?: string;
-  contentDisposition?: 'inline';
-  contentType?: string;
-} {
-  return {
-    filename,
-    path,
-    ...(cid ? { cid, contentDisposition: 'inline' as const } : {}),
-    ...(contentType ? { contentType } : {}),
-  };
-}
 
 export default class SmtpService {
   private readonly saveToSent: boolean;

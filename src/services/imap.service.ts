@@ -7,6 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ImapFlow } from 'imapflow';
 import libmime from 'libmime';
+import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 import type { IConnectionManager } from '../connections/types.js';
 import {
   assertAllowedExtension,
@@ -44,6 +45,7 @@ import { buildPreview, findPreviewPart, PREVIEW_PART_BYTES } from '../utils/body
 import { BULK_HEADER_FIELDS, classifyBulk } from '../utils/bulk-headers.js';
 import { stripHtml } from '../utils/html.js';
 import { imapCommand } from '../utils/imap-error.js';
+import { type PreparedAttachment, toTransportAttachment } from './attachments.js';
 import type { ReconnectEvent } from './event-bus.js';
 import eventBus from './event-bus.js';
 import type { LabelStrategy } from './label-strategy.js';
@@ -424,6 +426,41 @@ interface SearchCache {
     query: string,
     limit?: number,
   ): { uid: number }[];
+}
+
+/**
+ * Assemble a text or text+HTML draft by hand. Kept for attachment-free drafts
+ * so their wire format is unchanged; drafts with attachments go through
+ * MailComposer instead.
+ */
+function buildPlainDraft(headers: string[], body: string, html?: boolean): string {
+  let encoded: string;
+  if (html) {
+    // Mirrors what send_email puts on the wire: an HTML-only draft reads as
+    // raw markup in any client that opens the Drafts folder, and sendDraft
+    // would have to regenerate the alternative at send time anyway.
+    const boundary = `----email-mcp-${randomUUID()}`;
+    headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+    encoded = [
+      `--${boundary}`,
+      'Content-Type: text/plain; charset=utf-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      base64Body(stripHtml(body)),
+      `--${boundary}`,
+      'Content-Type: text/html; charset=utf-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      base64Body(body),
+      `--${boundary}--`,
+    ].join('\r\n');
+  } else {
+    headers.push('Content-Type: text/plain; charset=utf-8');
+    headers.push('Content-Transfer-Encoding: base64');
+    encoded = base64Body(body);
+  }
+
+  return `${headers.join('\r\n')}\r\n\r\n${encoded}`;
 }
 
 export default class ImapService {
@@ -1534,6 +1571,7 @@ export default class ImapService {
       html?: boolean;
       inReplyTo?: string;
       references?: string[];
+      attachments?: PreparedAttachment[];
     },
   ): Promise<{ id: number; mailbox: string }> {
     // Validate before touching the network: every one of these is spliced
@@ -1573,36 +1611,32 @@ export default class ImapService {
       headers.push(`References: ${options.references.join('\r\n ')}`);
     }
 
-    let body: string;
-    if (options.html) {
-      // Mirrors what send_email puts on the wire: an HTML-only draft reads as
-      // raw markup in any client that opens the Drafts folder, and sendDraft
-      // would have to regenerate the alternative at send time anyway.
-      const boundary = `----email-mcp-${randomUUID()}`;
-      headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
-      body = [
-        `--${boundary}`,
-        'Content-Type: text/plain; charset=utf-8',
-        'Content-Transfer-Encoding: base64',
-        '',
-        base64Body(stripHtml(options.body)),
-        `--${boundary}`,
-        'Content-Type: text/html; charset=utf-8',
-        'Content-Transfer-Encoding: base64',
-        '',
-        base64Body(options.body),
-        `--${boundary}--`,
-      ].join('\r\n');
+    let rawMessage: Buffer;
+    if (options.attachments?.length) {
+      // Attachments need real multipart/mixed assembly, so hand the whole
+      // message to the same composer send_email uses. keepBcc: a draft must
+      // remember its Bcc recipients for send_draft to deliver to them.
+      const node = new MailComposer({
+        from: formatFromHeader(account.fullName, account.email),
+        to: options.to.join(', '),
+        ...(options.cc?.length ? { cc: options.cc.join(', ') } : {}),
+        ...(options.bcc?.length ? { bcc: options.bcc.join(', ') } : {}),
+        subject: options.subject,
+        ...(options.inReplyTo ? { inReplyTo: options.inReplyTo } : {}),
+        ...(options.references?.length ? { references: options.references.join(' ') } : {}),
+        ...(options.html
+          ? { html: options.body, text: stripHtml(options.body) }
+          : { text: options.body }),
+        attachments: options.attachments.map(toTransportAttachment),
+      }).compile();
+      node.keepBcc = true;
+      rawMessage = await node.build();
     } else {
-      headers.push('Content-Type: text/plain; charset=utf-8');
-      headers.push('Content-Transfer-Encoding: base64');
-      body = base64Body(options.body);
+      rawMessage = Buffer.from(buildPlainDraft(headers, options.body, options.html));
     }
 
-    const rawMessage = `${headers.join('\r\n')}\r\n\r\n${body}`;
-
     const appendResult = await imapCommand(`Saving draft to "${draftsPath}"`, () =>
-      client.append(draftsPath, Buffer.from(rawMessage), ['\\Draft', '\\Seen']),
+      client.append(draftsPath, rawMessage, ['\\Draft', '\\Seen']),
     );
 
     return {
@@ -1610,7 +1644,6 @@ export default class ImapService {
       mailbox: draftsPath,
     };
   }
-
   /**
    * Fetch a draft message for sending.
    * Returns the parsed draft with recipients and content.

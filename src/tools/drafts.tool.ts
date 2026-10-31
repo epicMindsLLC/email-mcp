@@ -5,10 +5,12 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import audit from '../safety/audit.js';
+import { formatSize, prepareAttachments } from '../services/attachments.js';
 
 import type ImapService from '../services/imap.service.js';
 import type SmtpService from '../services/smtp.service.js';
 import type { SentCopyResult } from '../types/index.js';
+import { attachmentInputSchema, type SendLimit } from './send.tool.js';
 
 /** See send.tool.ts's identical helper — kept local to avoid a cross-tool-file import. */
 function sentCopyNote(sentCopy: SentCopyResult | undefined): string {
@@ -21,6 +23,7 @@ export default function registerDraftTools(
   server: McpServer,
   imapService: ImapService,
   smtpService: SmtpService,
+  sendLimit: SendLimit = { globalMb: 25, forAccount: () => 25 },
 ): void {
   // ---------------------------------------------------------------------------
   // save_draft
@@ -49,11 +52,31 @@ export default function registerDraftTools(
           .describe(
             'Full References chain for threading (original references plus its Message-ID)',
           ),
+        attachments: z
+          .array(attachmentInputSchema)
+          .optional()
+          .describe(
+            `Files to attach: plain paths, or {path, cid, contentType, filename} objects for inline images. Kept with the draft and sent by send_draft. The base64-encoded total must stay under the account's effective limit (global cap ${sendLimit.globalMb} MB).`,
+          ),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    async ({ account, to, subject, body, cc, bcc, html, in_reply_to: inReplyTo, references }) => {
+    async ({
+      account,
+      to,
+      subject,
+      body,
+      cc,
+      bcc,
+      html,
+      in_reply_to: inReplyTo,
+      references,
+      attachments,
+    }) => {
       try {
+        const prepared = attachments?.length
+          ? await prepareAttachments(attachments, sendLimit.forAccount(account))
+          : null;
         const result = await imapService.saveDraft(account, {
           to,
           subject,
@@ -63,6 +86,7 @@ export default function registerDraftTools(
           html,
           inReplyTo,
           references,
+          attachments: prepared?.attachments,
         });
 
         await audit.log('save_draft', account, { to, subject }, 'ok');
@@ -71,7 +95,11 @@ export default function registerDraftTools(
           content: [
             {
               type: 'text' as const,
-              text: `📝 Draft saved (ID: ${result.id}, folder: ${result.mailbox}).`,
+              text: `📝 Draft saved (ID: ${result.id}, folder: ${result.mailbox}).${
+                prepared?.attachments.length
+                  ? `\n📎 ${prepared.attachments.map((a) => `${a.filename} (${formatSize(a.size)})`).join(', ')}`
+                  : ''
+              }`,
             },
           ],
         };

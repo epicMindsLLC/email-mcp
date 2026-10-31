@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1074,6 +1074,30 @@ describe('ImapService', () => {
       expect(message).toContain('In-Reply-To: <orig@x>');
       // Folded onto continuation lines — valid RFC 5322 and never overlong.
       expect(message).toContain('References: <root@x>\r\n <orig@x>');
+    });
+
+    it('stores attachments and Bcc in a multipart draft', async () => {
+      client.list.mockResolvedValue([{ path: 'Drafts', specialUse: '\\Drafts' }]);
+      const dir = mkdtempSync(join(tmpdir(), 'draft-att-'));
+      const file = join(dir, 'invoice.pdf');
+      writeFileSync(file, '%PDF-1.4 test');
+
+      await service.saveDraft('test', {
+        to: ['a@b.c'],
+        bcc: ['hidden@b.c'],
+        subject: 'Invoice',
+        body: 'see attached',
+        attachments: [{ filename: 'invoice.pdf', path: file, size: 13 }],
+      });
+
+      const [folder, raw, flags] = client.append.mock.calls[0]!;
+      const message = (raw as Buffer).toString('utf-8');
+      expect(folder).toBe('Drafts');
+      expect(flags).toEqual(['\\Draft', '\\Seen']);
+      expect(message).toContain('multipart/mixed');
+      expect(message).toContain('filename=invoice.pdf');
+      expect(message).toContain('Bcc: hidden@b.c');
+      expect(message).toContain(Buffer.from('%PDF-1.4 test').toString('base64'));
     });
 
     it('appends a sent copy to the \\Sent special-use folder, flagged seen', async () => {
