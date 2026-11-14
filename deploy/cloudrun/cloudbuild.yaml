@@ -1,0 +1,7 @@
+# Builds deploy/cloudrun/Dockerfile from the repository root and pushes it to Artifact Registry.
+# gcloud builds submit --config deploy/cloudrun/cloudbuild.yaml --substitutions _IMAGE=REGION-docker.pkg.dev/PROJECT/REPO/NAME:TAG .
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "deploy/cloudrun/Dockerfile", "-t", "${_IMAGE}", "."]
+images:
+  - "${_IMAGE}"

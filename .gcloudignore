@@ -1,0 +1,16 @@
+# Upload only what the Cloud Run image build needs. Never upload config, credentials or tokens.
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.json
+!tsconfig.build.json
+!patches/
+!patches/**
+!src/
+!src/**
+src/__integration__/
+!deploy/
+!deploy/cloudrun/
+!deploy/cloudrun/Dockerfile
+!deploy/cloudrun/entrypoint.sh
